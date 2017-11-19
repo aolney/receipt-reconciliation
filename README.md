@@ -21,7 +21,7 @@ ReceiptReconciliation depends on other tools. It is simple enough you could prob
 1. As you buy things and get receipts, scan them with Office Lens and save to Word format. This will do OCR and save to OneDrive. You can even scan your computer screen for online purchases!
 2. When you want to reconcile, log into OneDrive and download Documents\Office Lens, which contains all the receipts
 3. Use [pandoc](https://pandoc.org/) to convert the docx Word files to txt. There is a script included so you can do this as a batch process. Run the script from the Office Lens receipt directory you downloaded.
-4. Save a copy of your transactions spreadsheet as tab delimited
+4. Save a copy of your transactions spreadsheet as **tab delimited**
 5. Run ReceiptReconciliation
 
 
