@@ -1,15 +1,21 @@
-﻿type Receipt =
+﻿open System
+type Receipt =
     {
         FilePath : string
         FileDate : System.DateTime
         Charges : float array
         Dates : System.DateTime array
     } 
-    member x.SummaryString() =  
-        System.IO.Path.GetFileNameWithoutExtension(x.FilePath) + "-" +
-        //x.FileDate.ToShortDateString()  + "-" + //this is already in the filename
-        (if x.Charges.Length > 0 then x.Charges |> Seq.max else 0.0).ToString()  + "-" + //The max charge is usually the total
-        (if x.Dates.Length > 0 then x.Dates.[0] else System.DateTime.MinValue).ToShortDateString() //The first date is usually the transaction date
+    member x.SummaryString(targetCharge:float) =  
+        (if x.Charges.Length > 0 then 
+            match x.Charges |> Seq.tryFind( fun c -> c = targetCharge) with
+            | Some(charge) -> charge  //try to find the specific charge
+            | None -> x.Charges |> Seq.max  //otherwise Max is probably the total (in a perfect OCR)
+        else 0.0).ToString()  
+            + " | " +
+        (if x.Dates.Length > 0 then x.Dates.[0] else x.FileDate).ToShortDateString() //The first date is usually the transaction date
+            + " | " +
+        System.IO.Path.GetFileNameWithoutExtension(x.FilePath)
 
 let moneyRegex = System.Text.RegularExpressions.Regex("[0-9]+[., ]+[0-9][0-9]")
 let dateRegex = System.Text.RegularExpressions.Regex("[0-9]+/[0-9]+/[0-9][0-9]+")
@@ -19,23 +25,36 @@ let ReadReceipt( filePath ) =
     //82817 758 PM Office Lens.txt
     let fileDateString = System.IO.Path.GetFileNameWithoutExtension( filePath ).Replace("Office Lens","").Trim()
     let split = fileDateString.Split(' ')
-    if split.Length <> 3 then failwith ("receipt name format invalid: " + fileDateString) //TODO we can get fails if we image multiple receipts in the same minute
+    //if split.Length <> 3 then failwith ("receipt name format invalid: " + fileDateString) //TODO we can get fails if we image multiple receipts in the same minute;  currently we don't care about the ambiguity because we're not requiring dates to be unique, but this could be a future problem
     let dateString,timeString,amPm = split.[0],split.[1],split.[2]
     let minute = timeString.Substring(timeString.Length - 2) //always has two decimal places
     let hour = timeString.Substring(0,timeString.Length - 2)
-    //let year = dateString.Substring(dateString.Length - 2) //always has two decimal places
-    //NOTE there is ambiguity here: 12117 could be Jan 21, 17 or Dec 1, 17
-    //we assume the most recent month
-    let currentMonth = System.DateTime.Now.Month
-    let year = dateString.Substring(dateString.Length - 2)
-
+    let year = dateString.Substring(dateString.Length - 2) //always has two decimal places
+   
+    //month has unambiguous and ambiguous cases
     let month = 
-        if currentMonth = 12 then 
-            [12 .. -1 .. 1] |> List.find( fun m -> dateString.StartsWith(m.ToString()) )
+        //unambiguous case, e.g. 112317 must be 11-23-17
+        if dateString.Length = 6 then 
+            System.Int32.Parse(  dateString.Substring(0,2) )
+        //ambiguous case, e.g. 11217 is either 11-2-17 or 1-12-17
         else
-            [currentMonth .. -1 .. 1] @ [12 .. -1 .. currentMonth] |> List.find( fun m -> dateString.StartsWith(m.ToString()) )
+            //use most recent month to disambiguate; 
+            //count backward from current month - this is a heuristic and may fail
+            let currentMonth = System.DateTime.Now.Month
+            if currentMonth = 12 then 
+                [12 .. -1 .. 1] |> List.find( fun m -> dateString.StartsWith(m.ToString()) )
+            else
+                [currentMonth .. -1 .. 1] @ [12 .. -1 .. currentMonth] |> List.find( fun m -> dateString.StartsWith(m.ToString()) )
+
     let day = dateString.Remove(dateString.Length - 2).Remove( 0, month.ToString().Length ) //remove year and month, day remains
-    let dateTime = System.DateTime( System.Int32.Parse("20" + year), month, System.Int32.Parse(day), System.Int32.Parse(hour) + (if amPm = "AM" || hour = "12" then 0 else 12), System.Int32.Parse(minute), 0 )
+    let dateTime = 
+        try
+            System.DateTime( System.Int32.Parse("20" + year), month, System.Int32.Parse(day), System.Int32.Parse(hour) + (if amPm = "AM" || hour = "12" then 0 else 12), System.Int32.Parse(minute), 0 )
+        with
+        | e -> 
+            //when we fail here it is typically because of ambiguities from Len's naming convention
+            printfn "%s" (e.Message + "\n" + filePath + "\n" + "year:" + year.ToString() + " month:" + month.ToString() + " day:" + day.ToString() + " hour:" + hour.ToString())
+            DateTime.MinValue
     
     //use regex to search for dates and charges in file
     let lines = System.IO.File.ReadAllLines( filePath )
@@ -95,7 +114,7 @@ let main argv =
                 if chargeReceiptDict.ContainsKey( charge) |> not then
                     String.concat delimString cols
                 else
-                    let receiptSummary = chargeReceiptDict.[charge] |> Seq.map( fun r -> r.SummaryString() ) //|> Seq.toArray
+                    let receiptSummary = chargeReceiptDict.[charge] |> Seq.map( fun r -> r.SummaryString(charge) ) //|> Seq.toArray
                     (String.concat delimString cols) + delimString + (String.concat delimString receiptSummary)
                 ) //|> Seq.toArray
         //ReadReceipt @"/z/aolney/repos/receipt-checker/Office Lens/9917 1242 PM Office Lens.txt"
