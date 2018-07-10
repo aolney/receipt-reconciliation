@@ -1,4 +1,9 @@
-﻿open System
+#r @"packages/FSharp.Data/lib/net45/FSharp.Data"
+
+open FSharp.Data
+
+open System
+
 type Receipt =
     {
         FilePath : string
@@ -63,62 +68,70 @@ let ReadReceipt( filePath ) =
        
     {FilePath=filePath; FileDate=dateTime; Charges=charges; Dates=dates}
 
-let ReadTransactions (delim : char ) (chargeIndex:int) ( transactionsPath : string ) =
-    transactionsPath 
-    |> System.IO.File.ReadAllLines
-    |> Seq.skip 1 //skip header
-    |> Seq.map( fun l ->
-        let s = l.Split(delim)
-        let charge = s.[chargeIndex] |> System.Double.Parse |> System.Math.Abs
-        s,charge
-        )
+//Returns a tuple: the tokenized row of the statement * value of the charge
+let ReadStatements (delim : string ) (chargeIndex:int) ( statementsDirectoryPath : string ) =
+    statementsDirectoryPath
+    |> System.IO.Directory.GetFiles 
+    |> Array.filter( fun f -> f.EndsWith(".csv") )
+    |> Array.collect( 
+        fun filePath -> 
+            let file = CsvFile.Load(filePath,delim) //TODO something wrong with quotes
+            file.Rows
+            |> Array.ofSeq
+            |> Array.map( fun row ->
+                let charge = row.[chargeIndex] |> System.Double.Parse |> System.Math.Abs
+                row,charge
+                )
+    )
         
-[<EntryPoint>]
-let main argv = 
-    let mutable args = argv
-    #if DEBUG
-    args <- [| @"/z/aolney/repos/receipt-checker/statement.csv"; @"/z/aolney/repos/receipt-checker/Office Lens" |]
-    #endif
-    if args.Length <> 2 then
-        System.Console.WriteLine("Usage: ReceiptReconciliation.exe transactionsPath receiptDirectoryPath")
-    else
-        //transactions are charges like you would find on a bank statement
-        let transactionsPath = args.[0] //@"/z/aolney/repos/receipt-checker/September2017_0403-tab.csv"
-        let chargeIndex = 4
-        let delimChar = '\t'
-        let transactions = transactionsPath |> ReadTransactions delimChar chargeIndex
-        
-        //receipts are OCR'd till receipts
-        let receiptsPath = args.[1] //@"/z/aolney/repos/receipt-checker/Office Lens"
-        let receipts = receiptsPath |> System.IO.Directory.GetFiles |> Seq.filter( fun f -> f.EndsWith(".txt") ) |> Seq.map ReadReceipt |> Seq.toArray//OCR files are txt
-        
-        //create a charge to receipt index; the same charge value can appear on multiple receipts, so store in list
-        let chargeReceiptDict = new System.Collections.Generic.Dictionary<float,System.Collections.Generic.List<Receipt>>()
-        for r in receipts do
-            for c in r.Charges do
-                if chargeReceiptDict.ContainsKey( c ) |> not then 
-                    chargeReceiptDict.Add(c,new System.Collections.Generic.List<Receipt>() )
-                chargeReceiptDict.[c].Add( r )
-            //because I tip to round numbers, add a pseudo receipt by adding 15% and rounding to nearest dollar
-            //this is really sketchy; probably should only apply to highest amount or false alarms too much
+
+if fsi.CommandLineArgs.Length <> 3 then
+    System.Console.WriteLine("Usage: fsharpi ReceiptReconciliation.fsx statementsDirectoryPath receiptDirectoryPath")
+else
+    //put your custom values here
+    let chargeIndex = 4     //column your charges appear in on your statement below
+    let delim = "," //defaults to comma
+
+
+    //csv format bank statement
+    let statementsDirectoryPath = fsi.CommandLineArgs.[1] //@"/z/aolney/repos/receipt-checker/September2017_0403-tab.csv"
+    let statements = statementsDirectoryPath |> ReadStatements delim chargeIndex
+    
+    //receipts are OCR'd till receipts
+    let receiptsPath = fsi.CommandLineArgs.[2] //@"/z/aolney/repos/receipt-checker/Office Lens"
+    let receipts = receiptsPath |> System.IO.Directory.GetFiles |> Array.filter( fun f -> f.EndsWith(".txt") ) |> Array.map ReadReceipt 
+    
+    //Using the receipts only, create a charge to receipt index; the same charge value can appear on multiple receipts, so store in list
+    let chargeReceiptDict = new System.Collections.Generic.Dictionary<float,System.Collections.Generic.List<Receipt>>()
+    for r in receipts do
+        for c in r.Charges do
+            if chargeReceiptDict.ContainsKey( c ) |> not then 
+                chargeReceiptDict.Add(c,new System.Collections.Generic.List<Receipt>() )
+            chargeReceiptDict.[c].Add( r )
+        //because I tip to round numbers, add a pseudo receipt by adding 15% and rounding to nearest dollar
+        //this is really sketchy; probably should only apply to highest amount or false alarms too much
 //            for c in r.Charges |> Array.map( fun charge -> System.Math.Ceiling(charge + charge * 0.15) ) do
 //                if chargeReceiptDict.ContainsKey( c ) |> not then 
 //                    chargeReceiptDict.Add(c,new System.Collections.Generic.List<Receipt>() )
 //                chargeReceiptDict.[c].Add( r )
-            
-        //traverse transactions, finding all matching receipts
-        let delimString = delimChar.ToString()
-        let reconciledTransactions =
-            transactions
-            |> Seq.map( fun (cols,charge) -> 
-                if chargeReceiptDict.ContainsKey( charge) |> not then
-                    String.concat delimString cols
-                else
-                    let receiptSummary = chargeReceiptDict.[charge] |> Seq.map( fun r -> r.SummaryString(charge) ) //|> Seq.toArray
-                    (String.concat delimString cols) + delimString + (String.concat delimString receiptSummary)
-                ) //|> Seq.toArray
-        //ReadReceipt @"/z/aolney/repos/receipt-checker/Office Lens/9917 1242 PM Office Lens.txt"
         
-        System.IO.File.WriteAllLines( transactionsPath + "-Reconciled.csv", reconciledTransactions)
-    
-    0 // return an integer exit code
+    //traverse transactions, finding all matching receipts
+    let delimString = delim.ToString()
+    let reconciledStatements =
+        statements
+        |> Array.map( fun (csvRow,charge) -> 
+
+            //Some elements contain delimiters, so we need to enclose the columns before writing to file
+            let quotedRow = csvRow.Columns |> Array.map( fun x -> "\"" + x + "\"")
+
+            //If we can't match the charge just print the original row
+            if chargeReceiptDict.ContainsKey( charge) |> not then
+                String.concat delimString quotedRow
+            //If we can match the charge, pring the original row plus the matching receipts
+            else
+                let receiptSummary = chargeReceiptDict.[charge] |> Seq.map( fun r -> r.SummaryString(charge) ) //|> Seq.toArray
+                (String.concat delimString quotedRow) + delimString + (String.concat delimString receiptSummary)
+            ) 
+
+    System.Console.WriteLine("Writing " +  statementsDirectoryPath + "-Reconciled.csv")
+    System.IO.File.WriteAllLines( statementsDirectoryPath + "-Reconciled.csv", reconciledStatements)
